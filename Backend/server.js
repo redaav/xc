@@ -5,6 +5,7 @@ const { createServer } = require("http");
 const app = express();
 const server = createServer(app);
 
+// Inicializamos el socket
 socket.initializeSocket(server);
 
 const cors = require("cors");
@@ -30,13 +31,44 @@ if (process.env.ENVIRONMENT == "production") {
 } else {
   app.use(morgan("dev"));
 }
-app.use(cors());
+
+// Configuración CORS mejorada con seguridad
+const allowedOrigins = process.env.ALLOWED_ORIGINS
+  ? process.env.ALLOWED_ORIGINS.split(',')
+  : ['http://localhost:5173', 'http://localhost:3000'];
+
+app.use(cors({
+    origin: process.env.ENVIRONMENT === 'production' ? allowedOrigins : '*',
+    credentials: true,
+    methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS']
+}));
+
 app.use(cookieParser());
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 
+// Middleware de compatibilidad para rutas con prefijo /api/
+// El frontend usa /api/users, /api/captains, /api/rides
+// Redirigimos a las rutas correctas sin el prefijo /api/
+app.use((req, res, next) => {
+  if (req.path.startsWith('/api/')) {
+    // Normalizar: /api/users → /user, /api/captains → /captain, /api/rides → /ride
+    const normalizedPath = req.path
+      .replace('/api/users', '/user')
+      .replace('/api/captains', '/captain')
+      .replace('/api/rides', '/ride')
+      .replace('/api/maps', '/map')
+      .replace('/api/mail', '/mail');
+
+    req.url = normalizedPath + (req.url.includes('?') ? req.url.substring(req.url.indexOf('?')) : '');
+  }
+  next();
+});
+
 if (process.env.ENVIRONMENT == "production") {
-  keepServerRunning();
+  // --- SOLUCIÓN APLICADA AQUÍ ---
+  // keepServerRunning(); // COMENTADO: Esto causaba el bucle de "Error reloading server"
+  console.log("Sistema de auto-recarga desactivado para estabilidad en Render.");
 }
 
 app.get("/", (req, res) => {

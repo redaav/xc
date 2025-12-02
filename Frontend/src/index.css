@@ -11,6 +11,58 @@
 }
 
 ::selection {
-  background-color: #bbf7d0;
-  color: black;
+  background-color: #00C853;
+  color: white;
+}
+
+/* iOS Safe Area Support - Evita distorsiones en notch y barras */
+@supports (padding: max(0px)) {
+  body {
+    padding-left: env(safe-area-inset-left);
+    padding-right: env(safe-area-inset-right);
+  }
+}
+
+/* Smooth scrolling para mejor UX */
+html {
+  scroll-behavior: smooth;
+}
+
+/* Disable text selection on buttons for better mobile UX */
+button {
+  -webkit-tap-highlight-color: transparent;
+  -webkit-touch-callout: none;
+  -webkit-user-select: none;
+  user-select: none;
+}
+
+/* Increase touch target size for mobile */
+@media (max-width: 640px) {
+  button, a, input[type="checkbox"], input[type="radio"] {
+    min-height: 44px;
+  }
+
+  input[type="range"] {
+    min-height: 44px;
+    cursor: pointer;
+  }
+}
+
+/* Responsive base font size */
+@media (max-width: 475px) {
+  html {
+    font-size: 15px;
+  }
+}
+
+/* Prevent horizontal overflow on small screens */
+@media (max-width: 640px) {
+  * {
+    overflow-wrap: break-word;
+    word-wrap: break-word;
+  }
+
+  body {
+    overflow-x: hidden;
+  }
 }

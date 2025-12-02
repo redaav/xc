@@ -1,25 +1,42 @@
-const { createTransport } = require("nodemailer");
+const sgMail = require('@sendgrid/mail');
 
-const transport = createTransport({
-  host: "smtp.gmail.com",
-  port: 465,
-  auth: {
-    user: process.env.MAIL_USER,
-    pass: process.env.MAIL_PASS,
-  },
-});
+sgMail.setApiKey(process.env.SENDGRID_API_KEY);
 
 const sendMail = async (to, subject, html) => {
   try {
-    const info = await transport.sendMail({
-      from: process.env.MAIL_USER,
-      to,
-      subject,
-      html,
-    });
-    console.log("Email sent:", info);
+    console.log('📧 Enviando correo con SendGrid...');
+    console.log('📬 Destinatario:', to);
+    console.log('📝 Asunto:', subject);
+    console.log('🔐 API Key configurada:', process.env.SENDGRID_API_KEY ? '✅ SÍ' : '❌ NO');
+
+    if (!process.env.SENDGRID_API_KEY) {
+      throw new Error('SENDGRID_API_KEY no configurada');
+    }
+
+    const msg = {
+      to: to,
+      from: 'lilnazx1115@gmail.com', // ← TU EMAIL VERIFICADO
+      subject: subject,
+      html: html,
+    };
+
+    const response = await sgMail.send(msg);
+    
+    console.log('✅ Correo enviado exitosamente');
+    console.log('📬 Status Code:', response[0].statusCode);
+    
+    return response;
+    
   } catch (error) {
-    console.error("Error sending email:", error);
+    console.error('❌ ERROR AL ENVIAR CORREO:');
+    console.error('📋 Mensaje:', error.message);
+    
+    if (error.response) {
+      console.error('🔍 Código:', error.code);
+      console.error('📊 Response:', error.response.body);
+    }
+    
+    throw new Error(`Failed to send email: ${error.message}`);
   }
 };
 
