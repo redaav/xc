@@ -2,8 +2,7 @@ import { useEffect, useState } from "react";
 import { useForm } from "react-hook-form";
 import { Link, useNavigate } from "react-router-dom";
 import { Button, Heading, Input } from "../components";
-import axios from "axios";
-import Console from "../utils/console";
+import { supabase } from "../lib/supabase";
 
 function UserSignup() {
   const [responseError, setResponseError] = useState("");
@@ -16,29 +15,42 @@ function UserSignup() {
   } = useForm();
 
   const navigation = useNavigate();
-  const signupUser = async (data) => {
-    const userData = {
-      fullname: {
-        firstname: data.firstname,
-        lastname: data.lastname,
-      },
-      email: data.email,
-      password: data.password,
-      phone: data.phone
-    };
 
+  const signupUser = async (data) => {
     try {
       setLoading(true);
-      const response = await axios.post(
-        `${import.meta.env.VITE_SERVER_URL}/user/register`,
-        userData
-      );
-      Console.log(response);
-      localStorage.setItem("token", response.data.token);
-      navigation("/home");
+
+      const { data: authData, error: authError } = await supabase.auth.signUp({
+        email: data.email,
+        password: data.password,
+      });
+
+      if (authError) {
+        setResponseError(authError.message);
+        return;
+      }
+
+      if (authData.user) {
+        const { error: profileError } = await supabase
+          .from("profiles")
+          .insert({
+            id: authData.user.id,
+            user_type: "user",
+            firstname: data.firstname,
+            lastname: data.lastname,
+            phone: data.phone,
+            email_verified: true,
+          });
+
+        if (profileError) {
+          setResponseError(profileError.message);
+          return;
+        }
+
+        navigation("/home");
+      }
     } catch (error) {
-      setResponseError(error.response.data[0].msg);
-      Console.log(error);
+      setResponseError(error.message || "An error occurred");
     } finally {
       setLoading(false);
     }
@@ -49,10 +61,11 @@ function UserSignup() {
       setResponseError("");
     }, 5000);
   }, [responseError]);
+
   return (
     <div className="w-full h-dvh flex flex-col justify-between p-4 pt-6">
       <div>
-        <Heading title={"User Sign Up🧑🏻"} />
+        <Heading title={"User Sign Up"} />
         <form onSubmit={handleSubmit(signupUser)}>
           <div className="flex gap-4 -mb-2">
             <Input

@@ -2,9 +2,8 @@ import { useEffect, useState } from "react";
 import { useForm } from "react-hook-form";
 import { Link, useNavigate } from "react-router-dom";
 import { Button, Heading, Input } from "../components";
-import axios from "axios";
 import { ArrowLeft, ChevronRight } from "lucide-react";
-import Console from "../utils/console";
+import { supabase } from "../lib/supabase";
 
 function CaptainSignup() {
   const [responseError, setResponseError] = useState("");
@@ -18,40 +17,62 @@ function CaptainSignup() {
   } = useForm();
 
   const navigation = useNavigate();
+
   const signupCaptain = async (data) => {
-
-    const captainData = {
-      fullname: {
-        firstname: data.firstname,
-        lastname: data.lastname,
-      },
-      email: data.email,
-      password: data.password,
-      phone: data.phone,
-      vehicle: {
-        color: data.color,
-        number: data.number,
-        capacity: data.capacity,
-        type: data.type,
-      },
-    };
-    Console.log(captainData);
-
     try {
       setLoading(true);
-      const response = await axios.post(
-        `${import.meta.env.VITE_SERVER_URL}/captain/register`,
-        captainData
-      );
-      Console.log(response);
-      localStorage.setItem("token", response.data.token);
-      navigation("/captain/home");
+
+      const { data: authData, error: authError } = await supabase.auth.signUp({
+        email: data.email,
+        password: data.password,
+      });
+
+      if (authError) {
+        setResponseError(authError.message);
+        setShowVehiclePanel(false);
+        return;
+      }
+
+      if (authData.user) {
+        const { error: profileError } = await supabase
+          .from("profiles")
+          .insert({
+            id: authData.user.id,
+            user_type: "captain",
+            firstname: data.firstname,
+            lastname: data.lastname,
+            phone: data.phone,
+            email_verified: true,
+          });
+
+        if (profileError) {
+          setResponseError(profileError.message);
+          setShowVehiclePanel(false);
+          return;
+        }
+
+        const { error: captainError } = await supabase
+          .from("captain_details")
+          .insert({
+            id: authData.user.id,
+            vehicle_color: data.color,
+            vehicle_number: data.number,
+            vehicle_capacity: parseInt(data.capacity),
+            vehicle_type: data.type.toLowerCase(),
+            status: "inactive",
+          });
+
+        if (captainError) {
+          setResponseError(captainError.message);
+          setShowVehiclePanel(false);
+          return;
+        }
+
+        navigation("/captain/home");
+      }
     } catch (error) {
-      setResponseError(
-        error.response.data[0]?.msg || error.response.data.message
-      );
+      setResponseError(error.message || "An error occurred");
       setShowVehiclePanel(false);
-      Console.log(error);
     } finally {
       setLoading(false);
     }
@@ -66,7 +87,7 @@ function CaptainSignup() {
   return (
     <div className="w-full h-dvh flex flex-col justify-between p-4 pt-6">
       <div>
-        <Heading title={"Captain Sign Up🚕"} />
+        <Heading title={"Captain Sign Up"} />
         <form onSubmit={handleSubmit(signupCaptain)}>
           {!showVehiclePanel && (
             <>

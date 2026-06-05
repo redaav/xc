@@ -1,42 +1,29 @@
-import { useCallback, useContext, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { useUser } from "../contexts/UserContext";
-import map from "/map.png";
-import {
-  Button,
-  LocationSuggestions,
-  SelectVehicle,
-  RideDetails,
-  Sidebar,
-} from "../components";
-import axios from "axios";
+import { Button, LocationSuggestions, SelectVehicle, RideDetails, Sidebar } from "../components";
+import MapView from "../components/MapView";
+import { supabase } from "../lib/supabase";
 import debounce from "lodash.debounce";
-import { SocketDataContext } from "../contexts/SocketContext";
-import Console from "../utils/console";
+import { calculateFare, haversineDistance, estimateDuration } from "../utils/maps";
 
 function UserHomeScreen() {
-  const token = localStorage.getItem("token"); // this token is in use
-  const { socket } = useContext(SocketDataContext);
   const { user } = useUser();
-  const [messages, setMessages] = useState(
-    JSON.parse(localStorage.getItem("messages")) || []
-  );
   const [loading, setLoading] = useState(false);
   const [selectedInput, setSelectedInput] = useState("pickup");
   const [locationSuggestion, setLocationSuggestion] = useState([]);
-  const [mapLocation, setMapLocation] = useState("");
   const [rideCreated, setRideCreated] = useState(false);
 
-  // Ride details
   const [pickupLocation, setPickupLocation] = useState("");
   const [destinationLocation, setDestinationLocation] = useState("");
+  const [pickupCoords, setPickupCoords] = useState(null);
+  const [destCoords, setDestCoords] = useState(null);
   const [selectedVehicle, setSelectedVehicle] = useState("car");
-  const [fare, setFare] = useState({
-    auto: 0,
-    car: 0,
-    bike: 0,
-  });
+  const [fare, setFare] = useState({ auto: 0, car: 0, bike: 0 });
   const [confirmedRideData, setConfirmedRideData] = useState(null);
+  const [currentRideId, setCurrentRideId] = useState(null);
   const rideTimeout = useRef(null);
+
+  const [userLocation, setUserLocation] = useState({ lat: 20.5937, lng: 78.9629 });
 
   // Panels
   const [showFindTripPanel, setShowFindTripPanel] = useState(true);
@@ -44,71 +31,83 @@ function UserHomeScreen() {
   const [showRideDetailsPanel, setShowRideDetailsPanel] = useState(false);
 
   const handleLocationChange = useCallback(
-    debounce(async (inputValue, token) => {
+    debounce(async (inputValue) => {
       if (inputValue.length >= 3) {
         try {
-          const response = await axios.get(
-            `${import.meta.env.VITE_SERVER_URL
-            }/map/get-suggestions?input=${inputValue}`,
-            {
-              headers: {
-                token: token,
-              },
-            }
+          const response = await fetch(
+            `https://nominatim.openstreetmap.org/search?format=json&q=${encodeURIComponent(inputValue)}&limit=5`
           );
-          Console.log(response.data);
-          setLocationSuggestion(response.data);
+          const data = await response.json();
+          setLocationSuggestion(data);
         } catch (error) {
-          Console.error(error);
+          console.error(error);
         }
       }
     }, 700),
     []
   );
 
+  const resolveCoords = async (address) => {
+    try {
+      const response = await fetch(
+        `https://nominatim.openstreetmap.org/search?format=json&q=${encodeURIComponent(address)}&limit=1`
+      );
+      const data = await response.json();
+      if (data.length > 0) {
+        return { lat: parseFloat(data[0].lat), lng: parseFloat(data[0].lon) };
+      }
+    } catch (error) {
+      console.error(error);
+    }
+    return null;
+  };
+
   const onChangeHandler = (e) => {
     setSelectedInput(e.target.id);
     const value = e.target.value;
-    if (e.target.id == "pickup") {
-      setPickupLocation(value);
-    } else if (e.target.id == "destination") {
-      setDestinationLocation(value);
-    }
-
-    if (import.meta.env.VITE_ENVIRONMENT === "production") {
-      handleLocationChange(value, token);
-    }
-
-    if (e.target.value.length < 3) {
-      setLocationSuggestion([]);
-    }
+    if (e.target.id === "pickup") setPickupLocation(value);
+    else if (e.target.id === "destination") setDestinationLocation(value);
+    handleLocationChange(value);
+    if (value.length < 3) setLocationSuggestion([]);
   };
 
-  const getDistanceAndFare = async (pickupLocation, destinationLocation) => {
-    Console.log(pickupLocation, destinationLocation);
+  const selectSuggestion = (suggestion) => {
+    const name = suggestion.display_name;
+    const coords = { lat: parseFloat(suggestion.lat), lng: parseFloat(suggestion.lon) };
+    if (selectedInput === "pickup") {
+      setPickupLocation(name);
+      setPickupCoords(coords);
+    } else {
+      setDestinationLocation(name);
+      setDestCoords(coords);
+    }
+    setLocationSuggestion([]);
+  };
+
+  const getDistanceAndFare = async () => {
     try {
       setLoading(true);
-      setMapLocation(
-        `https://www.google.com/maps?q=${pickupLocation} to ${destinationLocation}&output=embed`
-      );
-      const response = await axios.get(
-        `${import.meta.env.VITE_SERVER_URL
-        }/ride/get-fare?pickup=${pickupLocation}&destination=${destinationLocation}`,
-        {
-          headers: {
-            token: token,
-          },
-        }
-      );
-      Console.log(response);
-      setFare(response.data.fare);
+      let pc = pickupCoords;
+      let dc = destCoords;
+      if (!pc) pc = await resolveCoords(pickupLocation);
+      if (!dc) dc = await resolveCoords(destinationLocation);
+      if (!pc || !dc) {
+        setLoading(false);
+        return;
+      }
+      setPickupCoords(pc);
+      setDestCoords(dc);
+
+      const distance = haversineDistance(pc.lat, pc.lng, dc.lat, dc.lng);
+      const duration = estimateDuration(distance);
+      const calculatedFare = calculateFare(distance, duration);
+      setFare(calculatedFare);
 
       setShowFindTripPanel(false);
       setShowSelectVehiclePanel(true);
-      setLocationSuggestion([]);
-      setLoading(false);
     } catch (error) {
-      Console.log(error);
+      console.error(error);
+    } finally {
       setLoading(false);
     }
   };
@@ -116,264 +115,168 @@ function UserHomeScreen() {
   const createRide = async () => {
     try {
       setLoading(true);
-      const response = await axios.post(
-        `${import.meta.env.VITE_SERVER_URL}/ride/create`,
-        {
+      const { data: ride, error } = await supabase
+        .from("rides")
+        .insert({
+          user_id: user.id,
           pickup: pickupLocation,
           destination: destinationLocation,
-          vehicleType: selectedVehicle,
-        },
-        {
-          headers: {
-            token: token,
-          },
-        }
-      );
-      Console.log(response);
-      const rideData = {
-        pickup: pickupLocation,
-        destination: destinationLocation,
-        vehicleType: selectedVehicle,
-        fare: fare,
-        confirmedRideData: confirmedRideData,
-        _id: response.data._id,
-      };
-      localStorage.setItem("rideDetails", JSON.stringify(rideData));
-      setLoading(false);
+          pickup_lat: pickupCoords?.lat,
+          pickup_lng: pickupCoords?.lng,
+          dest_lat: destCoords?.lat,
+          dest_lng: destCoords?.lng,
+          fare: fare[selectedVehicle],
+          vehicle_type: selectedVehicle,
+          status: "pending",
+          distance: pickupCoords && destCoords ? Math.round(haversineDistance(pickupCoords.lat, pickupCoords.lng, destCoords.lat, destCoords.lng)) : null,
+          duration: pickupCoords && destCoords ? estimateDuration(haversineDistance(pickupCoords.lat, pickupCoords.lng, destCoords.lat, destCoords.lng)) : null,
+        })
+        .select()
+        .single();
+
+      if (error) throw error;
+      setCurrentRideId(ride.id);
       setRideCreated(true);
 
-      // Automatically cancel the ride after 1.5 minutes
       rideTimeout.current = setTimeout(() => {
-        cancelRide();
-      }, import.meta.env.VITE_RIDE_TIMEOUT);
-      
+        cancelRide(ride.id);
+      }, 90000);
     } catch (error) {
-      Console.log(error);
+      console.error(error);
+    } finally {
       setLoading(false);
     }
   };
 
-  const cancelRide = async () => {
-    const rideDetails = JSON.parse(localStorage.getItem("rideDetails"));
+  const cancelRide = async (rideId) => {
+    const id = rideId || currentRideId;
+    if (!id) return;
     try {
       setLoading(true);
-      await axios.get(
-        `${import.meta.env.VITE_SERVER_URL}/ride/cancel?rideId=${rideDetails._id || rideDetails.confirmedRideData._id
-        }`,
-        {
-          pickup: pickupLocation,
-          destination: destinationLocation,
-          vehicleType: selectedVehicle,
-        },
-        {
-          headers: {
-            token: token,
-          },
-        }
-      );
-      setLoading(false);
-      updateLocation();
-      setShowRideDetailsPanel(false);
-      setShowSelectVehiclePanel(false);
-      setShowFindTripPanel(true);
-      setDefaults();
-      localStorage.removeItem("rideDetails");
-      localStorage.removeItem("panelDetails");
-      localStorage.removeItem("messages");
-      localStorage.removeItem("showPanel");
-      localStorage.removeItem("showBtn");
+      await supabase.from("rides").update({ status: "cancelled" }).eq("id", id);
     } catch (error) {
-      Console.log(error);
+      console.error(error);
+    } finally {
       setLoading(false);
+      resetRide();
     }
   };
-  // Set ride details to default values
-  const setDefaults = () => {
+
+  const resetRide = () => {
+    clearTimeout(rideTimeout.current);
+    setShowRideDetailsPanel(false);
+    setShowSelectVehiclePanel(false);
+    setShowFindTripPanel(true);
     setPickupLocation("");
     setDestinationLocation("");
+    setPickupCoords(null);
+    setDestCoords(null);
     setSelectedVehicle("car");
-    setFare({
-      auto: 0,
-      car: 0,
-      bike: 0,
-    });
+    setFare({ auto: 0, car: 0, bike: 0 });
     setConfirmedRideData(null);
     setRideCreated(false);
+    setCurrentRideId(null);
   };
 
-  // Update Location
-  const updateLocation = () => {
+  // Update user location
+  useEffect(() => {
     if (navigator.geolocation) {
       navigator.geolocation.getCurrentPosition(
-        (position) => {
-          setMapLocation(
-            `https://www.google.com/maps?q=${position.coords.latitude},${position.coords.longitude}&output=embed`
-          );
-        },
-        (error) => {
-          console.error("Error fetching position:", error);
-          switch (error.code) {
-            case error.PERMISSION_DENIED:
-              console.error("User denied the request for Geolocation.");
-              break;
-            case error.POSITION_UNAVAILABLE:
-              console.error("Location information is unavailable.");
-              break;
-            case error.TIMEOUT:
-              console.error("The request to get user location timed out.");
-              break;
-            default:
-              console.error("An unknown error occurred.");
+        (position) => setUserLocation({ lat: position.coords.latitude, lng: position.coords.longitude }),
+        (error) => console.error("Geolocation error:", error)
+      );
+    }
+  }, []);
+
+  // Subscribe to ride updates
+  useEffect(() => {
+    if (!currentRideId) return;
+
+    const channel = supabase
+      .channel(`ride-${currentRideId}`)
+      .on(
+        "postgres_changes",
+        { event: "UPDATE", schema: "public", table: "rides", filter: `id=eq.${currentRideId}` },
+        async (payload) => {
+          const updatedRide = payload.new;
+          if (updatedRide.status === "accepted" && updatedRide.captain_id) {
+            clearTimeout(rideTimeout.current);
+            const { data: captainProfile } = await supabase
+              .from("profiles")
+              .select("id, firstname, lastname, phone")
+              .eq("id", updatedRide.captain_id)
+              .maybeSingle();
+            const { data: captainDetails } = await supabase
+              .from("captain_details")
+              .select("vehicle_color, vehicle_number, vehicle_capacity, vehicle_type, latitude, longitude")
+              .eq("id", updatedRide.captain_id)
+              .maybeSingle();
+
+            setConfirmedRideData({
+              id: updatedRide.id,
+              otp: updatedRide.otp,
+              captain: {
+                id: updatedRide.captain_id,
+                firstname: captainProfile?.firstname || "",
+                lastname: captainProfile?.lastname || "",
+                phone: captainProfile?.phone || "",
+                vehicle: captainDetails ? {
+                  color: captainDetails.vehicle_color,
+                  number: captainDetails.vehicle_number,
+                  capacity: captainDetails.vehicle_capacity,
+                  type: captainDetails.vehicle_type,
+                } : null,
+                location: captainDetails ? { lat: captainDetails.latitude, lng: captainDetails.longitude } : null,
+              },
+            });
+            setRideCreated(false);
+          }
+          if (updatedRide.status === "ongoing") {
+            // Ride started - just update status awareness
+          }
+          if (updatedRide.status === "completed") {
+            resetRide();
+          }
+          if (updatedRide.status === "cancelled") {
+            resetRide();
           }
         }
-      );
-    }
-  };
-
-  // Update Location
-  useEffect(() => {
-    updateLocation();
-  }, []);
-
-  // Socket Events
-  useEffect(() => {
-    if (user._id) {
-      socket.emit("join", {
-        userId: user._id,
-        userType: "user",
-      });
-    }
-
-    socket.on("ride-confirmed", (data) => {
-      Console.log("Clearing Timeout", rideTimeout);
-      clearTimeout(rideTimeout.current);
-      Console.log("Cleared Timeout");
-      Console.log("Ride Confirmed");
-      Console.log(data.captain.location);
-      setMapLocation(
-        `https://www.google.com/maps?q=${data.captain.location.coordinates[1]},${data.captain.location.coordinates[0]} to ${pickupLocation}&output=embed`
-      );
-      setConfirmedRideData(data);
-    });
-
-    socket.on("ride-started", (data) => {
-      Console.log("Ride started");
-      setMapLocation(
-        `https://www.google.com/maps?q=${data.pickup} to ${data.destination}&output=embed`
-      );
-    });
-
-    socket.on("ride-ended", (data) => {
-      Console.log("Ride Ended");
-      setShowRideDetailsPanel(false);
-      setShowSelectVehiclePanel(false);
-      setShowFindTripPanel(true);
-      setDefaults();
-      localStorage.removeItem("rideDetails");
-      localStorage.removeItem("panelDetails");
-
-      if (navigator.geolocation) {
-        navigator.geolocation.getCurrentPosition(
-          (position) => {
-            setMapLocation(
-              `https://www.google.com/maps?q=${position.coords.latitude},${position.coords.longitude}&output=embed`
-            );
-          },
-          (error) => {
-            console.error("Error fetching position:", error);
-          }
-        );
-      }
-    });
-  }, [user]);
-
-  // Get ride details
-  useEffect(() => {
-    const storedRideDetails = localStorage.getItem("rideDetails");
-    const storedPanelDetails = localStorage.getItem("panelDetails");
-
-    if (storedRideDetails) {
-      const ride = JSON.parse(storedRideDetails);
-      setPickupLocation(ride.pickup);
-      setDestinationLocation(ride.destination);
-      setSelectedVehicle(ride.vehicleType);
-      setFare(ride.fare);
-      setConfirmedRideData(ride.confirmedRideData);
-    }
-
-    if (storedPanelDetails) {
-      const panels = JSON.parse(storedPanelDetails);
-      setShowFindTripPanel(panels.showFindTripPanel);
-      setShowSelectVehiclePanel(panels.showSelectVehiclePanel);
-      setShowRideDetailsPanel(panels.showRideDetailsPanel);
-    }
-  }, []);
-
-  // Store Ride Details
-  useEffect(() => {
-    const rideData = {
-      pickup: pickupLocation,
-      destination: destinationLocation,
-      vehicleType: selectedVehicle,
-      fare: fare,
-      confirmedRideData: confirmedRideData,
-    };
-    localStorage.setItem("rideDetails", JSON.stringify(rideData));
-  }, [
-    pickupLocation,
-    destinationLocation,
-    selectedVehicle,
-    fare,
-    confirmedRideData,
-  ]);
-
-  // Store panel information
-  useEffect(() => {
-    const panelDetails = {
-      showFindTripPanel,
-      showSelectVehiclePanel,
-      showRideDetailsPanel,
-    };
-    localStorage.setItem("panelDetails", JSON.stringify(panelDetails));
-  }, [showFindTripPanel, showSelectVehiclePanel, showRideDetailsPanel]);
-
-  useEffect(() => {
-    localStorage.setItem("messages", JSON.stringify(messages));
-  }, [messages]);
-
-  useEffect(() => {
-    socket.emit("join-room", confirmedRideData?._id);
-
-    socket.on("receiveMessage", (msg) => {
-      setMessages((prev) => [...prev, { msg, by: "other" }]);
-    });
+      )
+      .subscribe();
 
     return () => {
-      socket.off("receiveMessage");
+      supabase.removeChannel(channel);
     };
-  }, [confirmedRideData]);
+  }, [currentRideId]);
+
+  // Map markers
+  const markers = [];
+  if (pickupCoords) markers.push({ lat: pickupCoords.lat, lng: pickupCoords.lng, label: "Pickup" });
+  if (destCoords) markers.push({ lat: destCoords.lat, lng: destCoords.lng, label: "Destination" });
+  if (confirmedRideData?.captain?.location) {
+    markers.push({ lat: confirmedRideData.captain.location.lat, lng: confirmedRideData.captain.location.lng, label: "Captain" });
+  }
+
+  const mapCenter = confirmedRideData?.captain?.location
+    ? [confirmedRideData.captain.location.lat, confirmedRideData.captain.location.lng]
+    : markers.length > 0
+    ? [markers[0].lat, markers[0].lng]
+    : [userLocation.lat, userLocation.lng];
 
   return (
-    <div
-      className="relative w-full h-dvh bg-contain"
-      style={{ backgroundImage: `url(${map})` }}
-    >
-      <Sidebar />
-      <iframe
-        src={mapLocation}
-        className="absolute map w-full h-[120vh]"
-        allowFullScreen={true}
-        loading="lazy"
-        referrerPolicy="no-referrer-when-downgrade"
-      ></iframe>
-      {/* Find a trip component */}
+    <div className="relative w-full h-dvh">
+      <Sidebar userType="user" profile={user} />
+      <div className="absolute inset-0 z-0">
+        <MapView center={mapCenter} markers={markers} route={markers.length === 2 ? markers : null} />
+      </div>
+
       {showFindTripPanel && (
-        <div className="absolute b-0 flex flex-col justify-start p-4 pb-2 gap-4 rounded-b-lg bg-white h-fit w-full">
+        <div className="absolute bottom-0 flex flex-col justify-start p-4 pb-2 gap-4 rounded-b-lg bg-white h-fit w-full z-10">
           <h1 className="text-2xl font-semibold">Find a trip</h1>
           <div className="flex items-center relative w-full h-fit">
             <div className="h-3/5 w-[3px] flex flex-col items-center justify-between bg-black rounded-full absolute mx-5">
-              <div className="w-2 h-2 rounded-full border-[3px]  bg-white border-black"></div>
-              <div className="w-2 h-2 rounded-sm border-[3px]  bg-white border-black"></div>
+              <div className="w-2 h-2 rounded-full border-[3px] bg-white border-black"></div>
+              <div className="w-2 h-2 rounded-sm border-[3px] bg-white border-black"></div>
             </div>
             <div>
               <input
@@ -395,30 +298,23 @@ function UserHomeScreen() {
             </div>
           </div>
           {pickupLocation.length > 2 && destinationLocation.length > 2 && (
-            <Button
-              title={"Search"}
-              loading={loading}
-              fun={() => {
-                getDistanceAndFare(pickupLocation, destinationLocation);
-              }}
-            />
+            <Button title={"Search"} loading={loading} fun={getDistanceAndFare} />
           )}
-
-          <div className="w-full h-full overflow-y-scroll ">
+          <div className="w-full h-full overflow-y-scroll">
             {locationSuggestion.length > 0 && (
               <LocationSuggestions
                 suggestions={locationSuggestion}
                 setSuggestions={setLocationSuggestion}
-                setPickupLocation={setPickupLocation}
-                setDestinationLocation={setDestinationLocation}
+                setPickupLocation={(name) => { setPickupLocation(name); }}
+                setDestinationLocation={(name) => { setDestinationLocation(name); }}
                 input={selectedInput}
+                onSelect={selectSuggestion}
               />
             )}
           </div>
         </div>
       )}
 
-      {/* Select Vehicle Panel */}
       <SelectVehicle
         selectedVehicle={setSelectedVehicle}
         showPanel={showSelectVehiclePanel}
@@ -428,7 +324,6 @@ function UserHomeScreen() {
         fare={fare}
       />
 
-      {/* Ride Details Panel */}
       <RideDetails
         pickupLocation={pickupLocation}
         destinationLocation={destinationLocation}
@@ -438,7 +333,7 @@ function UserHomeScreen() {
         setShowPanel={setShowRideDetailsPanel}
         showPreviousPanel={setShowSelectVehiclePanel}
         createRide={createRide}
-        cancelRide={cancelRide}
+        cancelRide={() => cancelRide()}
         loading={loading}
         rideCreated={rideCreated}
         confirmedRideData={confirmedRideData}

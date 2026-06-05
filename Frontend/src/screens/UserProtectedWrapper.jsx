@@ -1,60 +1,52 @@
-import axios from "axios";
 import { useEffect, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { useUser } from "../contexts/UserContext";
-import VerifyEmail from "../components/VerifyEmail";
 import Loading from "./Loading";
+import { supabase } from "../lib/supabase";
 
 function UserProtectedWrapper({ children }) {
-  const token = localStorage.getItem("token");
   const navigate = useNavigate();
-  const { user, setUser } = useUser();
-
+  const { setUser } = useUser();
   const [loading, setLoading] = useState(true);
-  const [isVerified, setIsVerified] = useState(null);
 
   useEffect(() => {
-    if (!token) {
-      navigate("/login");
-      return;
-    }
+    const checkAuth = async () => {
+      try {
+        const { data: { session }, error } = await supabase.auth.getSession();
+        if (error || !session) { navigate("/login"); return; }
 
-    setLoading(true);
-    axios
-      .get(`${import.meta.env.VITE_SERVER_URL}/user/profile`, {
-        headers: {
-          token: token,
-        },
-      })
-      .then((response) => {
-        if (response.status === 200) {
-          const user = response.data.user;
-          setUser(user);
-          localStorage.setItem(
-            "userData",
-            JSON.stringify({ type: "user", data: user })
-          );
-          setIsVerified(user.emailVerified);
+        const { data: profile } = await supabase
+          .from("profiles")
+          .select("*")
+          .eq("id", session.user.id)
+          .maybeSingle();
+
+        if (!profile || profile.user_type !== "user") {
+          navigate("/login");
+          return;
         }
-      })
-      .catch(() => {
-        localStorage.removeItem("token");
-        localStorage.removeItem("userData");
+
+        setUser({
+          id: profile.id,
+          email: profile.email || session.user.email || "",
+          firstname: profile.firstname || "",
+          lastname: profile.lastname || "",
+          phone: profile.phone || "",
+          email_verified: profile.email_verified || false,
+          user_type: "user",
+        });
+      } catch (error) {
+        console.error("Auth check error:", error);
         navigate("/login");
-      })
-      .finally(() => {
+      } finally {
         setLoading(false);
-      });
-  }, [token]);
+      }
+    };
+    checkAuth();
+  }, [navigate]);
 
   if (loading) return <Loading />;
-
-  if (isVerified === false) {
-    return <VerifyEmail user={user} role={"user"} />;
-  }
-
   return <>{children}</>;
 }
-
 
 export default UserProtectedWrapper;
